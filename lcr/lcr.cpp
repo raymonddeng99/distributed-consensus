@@ -1,5 +1,12 @@
+#include <unistd.h>
+#include <stdio.h>
 
+#define NAMED_PIPE "/var/lock/pipename"
 
+struct message {
+	int pid;
+	int counter;
+}
 
 int main(){
 	int numProcesses = 15;
@@ -25,6 +32,11 @@ int main(){
 		send <terminate, i> to left
 		terminate
 	*/
+
+	// create the named pipe (fifo) with permission
+    int ret = mkfifo(NAMED_PIPE, 0666);
+    if (ret < 0)
+        printf("Error when creating FIFO. %s\n", strerror(errno));
 
 	for (int processIdx = 0; processIdx < numProcesses; processIdx++){
 		pid = fork();
