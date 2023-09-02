@@ -1,52 +1,67 @@
-#include <unistd.h>
-#include <stdio.h>
+#include <iostream>
+#include <cstdlib>
+#include <ctime>
+#include <vector>
 
-#define NAMED_PIPE "/var/lock/pipename"
+using namespace std;
 
-struct message {
-	int pid;
-	int counter;
-}
+class Process {
+public:
+    int id;
+    bool leader;
+    bool active;
 
-int main(){
-	int numProcesses = 15;
+    Process(int _id) : id(_id), leader(false), active(true) {}
 
-	/*
-	upon receiving no message
-		send uid to left
+    void sendMessage(Process& receiver) {
+        cout << "Process " << id << " sends a message to Process " << receiver.id << endl;
+        receiver.receiveMessage(*this);
+    }
 
-	upon receiving message from right
-	case:
-		m.uid > uid:
-			send m to left
-		m.uid < uid:
-			discard m
-		m.uid = uid:
-			leader := i
-			send <terminate, i> to left
-			terminate
-		endcase
+    void receiveMessage(Process& sender) {
+        if (active) {
+            cout << "Process " << id << " received a message from Process " << sender.id << endl;
 
-	upon receiving <terminate, i> from right
-		leader := i
-		send <terminate, i> to left
-		terminate
-	*/
+            if (id > sender.id) {
+                leader = true;
+                cout << "Process " << id << " declares itself as the leader." << endl;
+            }
+            else {
+                leader = false;
+            }
+            active = false;
+        }
+    }
+};
 
-	// create the named pipe (fifo) with permission
-    int ret = mkfifo(NAMED_PIPE, 0666);
-    if (ret < 0)
-        printf("Error when creating FIFO. %s\n", strerror(errno));
+int main() {
+    int numProcesses;
+    cout << "Enter the number of processes in the ring: ";
+    cin >> numProcesses;
 
-	for (int processIdx = 0; processIdx < numProcesses; processIdx++){
-		pid = fork();
-	}
+    vector<Process> processes;
 
-	if (pid < 0) {
-		perror('Fork failed\n');
-		return pid;
-	}
+    // Create processes
+    for (int i = 0; i < numProcesses; ++i) {
+        processes.emplace_back(i);
+    }
 
-	if (pid == 0){ // child
-	}
+    // Simulate message passing until a leader is elected
+    srand(time(nullptr));
+    int senderIdx = rand() % numProcesses;
+    int receiverIdx = (senderIdx + 1) % numProcesses;
+
+    while (true) {
+        processes[senderIdx].sendMessage(processes[receiverIdx]);
+
+        if (processes[receiverIdx].leader) {
+            cout << "Leader elected: Process " << receiverIdx << endl;
+            break;
+        }
+
+        senderIdx = receiverIdx;
+        receiverIdx = (receiverIdx + 1) % numProcesses;
+    }
+
+    return 0;
 }
