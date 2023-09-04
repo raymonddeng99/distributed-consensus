@@ -12,51 +12,54 @@ public:
     int id;
     bool leader;
     bool active;
-    int node_sock;
-    char buf[256];
-    int rc;
-    struct sockaddr_un node_addr;
 
-    Process(int _id, const char* SOCK_PATH) : id(_id), leader(false), active(true) {
+    Process(int _id, const char* _SOCK_PATH) : id(_id), SOCK_PATH(_SOCK_PATH), leader(false), active(true) {
         node_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (node_sock == -1){
+        if (node_sock == -1)
+        {
             printf("Opening socket failed!\n");
             exit(1);
         }
 
-        // memset(&node_addr, 0, sizeof(node_addr));
-        // node_addr.sun_family = AF_UNIX;
-        // strcpy(node_addr.sun_path, SOCK_PATH);
-        // int len = sizeof(node_addr);
-        // unlink(SOCK_PATH);
+        memset(&node_addr, 0, sizeof(node_addr));
+        node_addr.sun_family = AF_UNIX;
+        strcpy(node_addr.sun_path, SOCK_PATH);
+        int len = sizeof(node_addr);
+        unlink(SOCK_PATH);
 
-        // rc = bind(node_sock, (struct sockaddr *)&node_addr, len);
-        // if (rc == -1){
-        //     printf("NODE %d: Node bind error: %s\n", _id, strerror(errno));
-        //     close(node_sock);
-        //     exit(1);
-        // }
-
-        // rc = listen(node_sock, 1);
-        // if (rc == -1){
-        //     printf("NODE %d: Listen error: %s\n", _id, strerror(errno));
-        //     close(node_sock);
-        //     exit(1);
-        // }
-
-        printf("NODE %d listening...\n", _id);
-
-        memset(buf, 0, sizeof(buf));
-        strcpy(buf, "HELLO FROM CLIENT");
-        sendMessage(buf, strlen(buf));
-    }
-
-    void sendMessage(char* messageBuf, size_t size) {
         struct sockaddr_un coordinator_addr;
         memset(&coordinator_addr, 0, sizeof(coordinator_addr));
         coordinator_addr.sun_family = AF_UNIX;
         strcpy(coordinator_addr.sun_path, COORDINATOR_SOCK_PATH);
+        
+        memset(buf, 0, sizeof(buf));
+        strcpy(buf, "HELLO FROM CLIENT");
+        sendMessage(coordinator_addr, buf, strlen(buf));
 
+        node_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        rc = bind(node_sock, (struct sockaddr *)&node_addr, len);
+        if (rc == -1){
+            printf("NODE %d: Node bind error: %s\n", _id, strerror(errno));
+            close(node_sock);
+            exit(1);
+        }
+
+        rc = listen(node_sock, 1);
+        if (rc == -1){
+            printf("NODE %d: Listen error: %s\n", _id, strerror(errno));
+            close(node_sock);
+            exit(1);
+        }
+
+        printf("NODE %d listening...\n", _id);
+
+        while(true)
+        {
+            receiveMessage();
+        }
+    }
+
+    void sendMessage(sockaddr_un coordinator_addr, char* messageBuf, size_t size) {
         rc = connect(node_sock, (struct sockaddr*)&coordinator_addr, sizeof(node_addr));
         if(rc == -1)
         {
@@ -66,23 +69,25 @@ public:
         }
         printf("NODE %d: Connected to server.\n", id);
 
-        rc = send(node_sock, messageBuf, sizeof(messageBuf), 0);
+        rc = send(node_sock, messageBuf, strlen(messageBuf), 0);
         if (rc == -1)
         {
-            printf("CLIENT: Send error. %s\n", strerror(errno));
+            printf("NODE: Send error. %s\n", strerror(errno));
             close(node_sock);
             exit(1);
         }
-        printf("CLIENT: Sent a message to server.\n");
+        printf("NODE %d: Sent a message to server.\n", id);
+        close(node_sock);
     }
 
-    void receiveMessage(Process& sender) {
+    void receiveMessage() {
         struct sockaddr_un client_addr;
         memset(&client_addr, 0, sizeof(client_addr));
         int len = sizeof(client_addr);
 
         int client_fd = accept(node_sock, (struct sockaddr *) &client_addr, (socklen_t*)&len);
-        if (client_fd == -1){
+        if (client_fd == -1)
+        {
             printf("NODE %d: Accept error: %s\n", id, strerror(errno));
             close(node_sock);
             close(client_fd);
@@ -92,22 +97,26 @@ public:
         printf("NODE %d: Connected to client at: %s\n", id, client_addr.sun_path);
         printf("NODE %d: Waiting for message...\n", id);
 
-        char buf[256];
         memset(buf, 0, 256);
-
-        // while(1){
-            int byte_recv = recv(client_fd, buf, sizeof(buf), 0);
-            if (byte_recv == -1){
-                printf("NODE %d: Error when receiving message: %s\n", id, strerror(errno));
-                close(node_sock);
-                close(client_fd);
-                exit(1);
-            }
-            else {
-                printf("NODE %d: Node received message: %s\n", id, buf);
-            }
-        // }
+        int byte_recv = recv(client_fd, buf, sizeof(buf), 0);
+        if (byte_recv == -1)
+        {
+            printf("NODE %d: Error when receiving message: %s\n", id, strerror(errno));
+            close(node_sock);
+            close(client_fd);
+            exit(1);
+        }
+        else
+        {
+            printf("NODE %d: Node received message: %s\n", id, buf);
+        }
     }
+private:
+    int node_sock;
+    char buf[256];
+    int rc;
+    struct sockaddr_un node_addr;
+    const char* SOCK_PATH;
 };
 
 class Coordinator{
@@ -182,20 +191,20 @@ public:
             close(client_fd);
             exit(1);
         }
-        printf("SERVER: Connected to client at: %s\n", client_addr.sun_path);
-        printf("SERVER: Wating for message...\n");
+        printf("COORDINATOR: Connected to client at: %s\n", client_addr.sun_path);
+        printf("COORDINATOR: Wating for message...\n");
 
         memset(buf, 0, 256);
         int byte_recv = recv(client_fd, buf, sizeof(buf), 0);
         if (byte_recv == -1)
         {
-            printf("SERVER: Error when receiving message: %s\n", strerror(errno));
+            printf("COORDINATOR: Error when receiving message: %s\n", strerror(errno));
             close(coordinator_sock);
             close(client_fd);
             exit(1);
         }
         else{
-            printf("SERVER: Server received message: %s.\n", buf);
+            printf("COORDINATOR: Server received message: %s.\n", buf);
         }
     }
 private:
