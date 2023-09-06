@@ -21,12 +21,13 @@ public:
 
     void createRing();
 
-    virtual void messageHandler(char* message_buffer, size_t size_message_buffer) override;
+    void messageHandler(char* message_buffer, size_t size_message_buffer) override;
 
     void startLCR();
 
 private:
     int ring_size;
+    int numRounds;
     std::vector<int> heartbeats;
 
     void handleHeartbeat(RingMessage* message);
@@ -39,7 +40,7 @@ private:
 
     struct sockaddr_un getRingAddr(int ringIdx);
 
-    const char* getNodeAddrPath(int ringIdx);
+    std::string getNodeAddrPath(int ringIdx);
 };
 
 #endif

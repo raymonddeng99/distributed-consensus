@@ -6,7 +6,7 @@ Server::Server(const char* _SOCK_PATH) : SOCK_PATH(_SOCK_PATH) {
 	// 	return 1;
 	// }
 
-	int server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+	server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server_sock == -1)
     {
         printf("Opening socket %s failed!\n", SOCK_PATH);
@@ -17,51 +17,52 @@ Server::Server(const char* _SOCK_PATH) : SOCK_PATH(_SOCK_PATH) {
     memset(&node_addr, 0, sizeof(node_addr));
     node_addr.sun_family = AF_UNIX;
     strcpy(node_addr.sun_path, SOCK_PATH);
-    int len = sizeof(node_addr);
     unlink(SOCK_PATH);
 
-    server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    int rc = bind(server_sock, (struct sockaddr *)&node_addr, len);
+    int rc = bind(server_sock, (struct sockaddr *)&node_addr, sizeof(node_addr));
     if (rc == -1){
         printf("SERVER: Node bind error: %s\n", strerror(errno));
         close(server_sock);
         exit(1);
     }
 
-    rc = listen(server_sock, 1);
+    rc = listen(server_sock, 10);
     if (rc == -1){
         printf("SERVER: Listen error: %s\n", strerror(errno));
         close(server_sock);
         exit(1);
     }
 
-    printf("SERVER listening...\n");
+    printf("SERVER %s listening...\n", SOCK_PATH);
+}
 
-    while(true){
-    	receiveMessage();
-    }
+void Server::start()
+{
+	while(true)
+	{
+		receiveMessage();
+	}
 }
 
 void Server::sendMessage(struct sockaddr_un target_addr, char* messageBuf, size_t size){
-	int message_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-	int rc = connect(message_sock, (struct sockaddr*)&target_addr, sizeof(target_addr));
+	int client_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+	int rc = connect(client_sock, (struct sockaddr*)&target_addr, sizeof(target_addr));
     if(rc == -1)
     {
         printf("SERVER: Connect error. %s\n", strerror(errno));
-        close(message_sock);
+        close(client_sock);
         exit(1);
     }
-    printf("SERVER: Connected to server.\n");
 
-    rc = send(message_sock, messageBuf, strlen(messageBuf), 0);
+    rc = send(client_sock, messageBuf, size, 0);
     if (rc == -1)
     {
         printf("NODE: Send error. %s\n", strerror(errno));
-        close(message_sock);
+        close(client_sock);
         exit(1);
     }
-    printf("SERVER: Sent a message to server.\n");
-    close(message_sock);
+
+    close(client_sock);
 }
 
 void Server::receiveMessage(){
@@ -80,9 +81,12 @@ void Server::receiveMessage(){
     clientThread.detach();
 }
 
-void Server::handleClient(int clientSocket) {
-    while (true) {
-    	char message_buffer[1024];
+void Server::handleClient(int clientSocket) 
+{
+    while (true) 
+    {
+    	char message_buffer[256];
+    	memset(message_buffer, 0, sizeof(message_buffer));
 
         int bytesRead = recv(clientSocket, message_buffer, sizeof(message_buffer), 0);
         if (bytesRead <= 0) {
@@ -91,6 +95,8 @@ void Server::handleClient(int clientSocket) {
         }
 
         messageHandler(message_buffer, sizeof(message_buffer));
+
+        close(clientSocket);
     }
 }
 

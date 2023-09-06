@@ -7,7 +7,25 @@ Coordinator::Coordinator(const char* _SOCK_PATH,
     int _ring_size)
     :   Server(_SOCK_PATH),
         ring_size(_ring_size)
-    {}
+    {
+        for (int i = 0; i < ring_size; i++)
+        {
+            heartbeats.push_back(0);
+        }
+
+        pid_t child_pid = fork();
+        if (child_pid == -1) {
+            std::cerr << "Fork failed!" << std::endl;
+            exit(1);
+        }
+        if (child_pid == 0) {
+            createRing();
+            exit(0);
+        }
+        else{
+            start();
+        }
+    }
 
 void Coordinator::createRing(){
     for (int ringIdx = 0; ringIdx < ring_size; ++ringIdx) {
@@ -18,9 +36,10 @@ void Coordinator::createRing(){
         }
 
         if (node_pid == 0) {
-            const char* nodeAddrPath = getNodeAddrPath(ringIdx);
-            Node node(nodeAddrPath, ringIdx, getpid(), ring_size);
+            std::string nodeAddrString = getNodeAddrPath(ringIdx);
+            Node node(nodeAddrString.c_str(), ringIdx, ring_size);
             node.sendHeartbeat();
+            node.start();
             exit(0);
         }
     }
@@ -45,24 +64,17 @@ void Coordinator::messageHandler(char* message_buffer, size_t size_message_buffe
     }
 }
 
-void Coordinator::startLCR(){
-    for (int round = 0; round < ring_size; round++)
-    {
-        while(!allResponded())
-        {
-            std::chrono::seconds duration(static_cast<int>(0.75));
-            std::this_thread::sleep_for(duration);
-        }
-        startRound();
-        clearHeartbeats();            
-        
-    }
-}
-
 void Coordinator::handleHeartbeat(RingMessage* message)
 {
     int ringIdx = message->sourceRingID;
     heartbeats[ringIdx] = 1;
+
+    if (allResponded() && numRounds < ring_size)
+    {
+        numRounds += 1;
+        startRound();
+        clearHeartbeats();
+    }
 }
 
 void Coordinator::clearHeartbeats()
@@ -96,7 +108,7 @@ void Coordinator::startRound(){
 
         char message[256];
         memcpy(message, &startRoundMessage, sizeof(startRoundMessage));
-        sendMessage(neighbor_addr, message, strlen(message));
+        sendMessage(neighbor_addr, message, sizeof(message));
     }
 }
 
@@ -104,13 +116,12 @@ struct sockaddr_un Coordinator::getRingAddr(int ringIdx){
     struct sockaddr_un ring_addr;
     memset(&ring_addr, 0, sizeof(ring_addr));
     ring_addr.sun_family = AF_UNIX;
-    const char* ring_addr_path = getNodeAddrPath(ringIdx);
+    std::string ring_addr_string = getNodeAddrPath(ringIdx);
+    const char* ring_addr_path = ring_addr_string.c_str();
     strcpy(ring_addr.sun_path, ring_addr_path);
     return ring_addr;
 }
 
-const char* Coordinator::getNodeAddrPath(int ringIdx){
-    std::string nodeAddrString = "unix_sock." + std::to_string(ringIdx);
-    const char* nodeAddr = nodeAddrString.c_str();
-    return nodeAddr;
+std::string Coordinator::getNodeAddrPath(int ringIdx){
+    return NODE_BASE_SOCK_PATH + std::to_string(ringIdx);
 }

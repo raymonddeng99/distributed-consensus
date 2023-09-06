@@ -16,6 +16,8 @@ class Server {
 public:
     Server(const char* _SOCK_PATH);
 
+    void start();
+
     void sendMessage(struct sockaddr_un target_addr, char* messageBuf, size_t size);
 
     void receiveMessage();

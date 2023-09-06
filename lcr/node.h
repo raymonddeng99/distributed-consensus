@@ -16,11 +16,11 @@
 
 class Node : public Server {
 public:
-    Node(const char* _SOCK_PATH, int _ring_id, int _pid, int _ring_size);
+    Node(const char* _SOCK_PATH, int _ring_id, int _ring_size);
 
     void sendHeartbeat();
 
-    virtual void messageHandler(char* message_buffer, size_t size_message_buffer) override;
+    void messageHandler(char* message_buffer, size_t size_message_buffer) override;
 
 private:
     int leader;
