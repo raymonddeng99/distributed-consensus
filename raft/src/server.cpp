@@ -131,4 +131,20 @@ void RaftServerImpl::resetElectionTimeout() {
 }
 
 void RaftServerImpl::handleElectionTimeout() {
+  auto currentTime = std::chrono::system_clock::now();
+
+    if (currentTime - lastHeartbeatTime >= electionTimeout) {
+        convertToCandidate();
+        resetElectionTimeout();
+    }
+}
+
+void ChordNodeImpl::convertToCandidate() {
+    currentTerm++;
+    votedFor = std::to_string(nodeId);
+
+    resetElectionTimeout();
+
+    currentState = ServerState::CANDIDATE;
+    requestVotes();
 }
