@@ -22,7 +22,37 @@ kj::Promise<NodeInfo::Reader> appendEntry(FindSuccessorContext context){
 }
 
 kj::Promise<NodeInfo::Reader> requestVote(FindPredecessorContext context){
-    return;
+  int term = context.getParams().getTerm();
+  int candidateId = context.getParams().getCandidateId();
+  int lastLogIndex = context.getParams().getLastLogIndex();
+  int lastLogTerm = context.getParams().getLastLogTerm();
+
+  kj::PromiseFulfiller<NodeInfo::Reader> fulfiller = context.getResults();
+
+  if (term < currentTerm) {
+      NodeInfo::Builder responseBuilder = context.getResults().getResults();
+      responseBuilder.setTerm(currentTerm);
+      responseBuilder.setVoteGranted(false);
+      fulfiller.fulfill(responseBuilder.asReader());
+      return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
+  }
+
+  if ((votedFor.empty() || votedFor == std::to_string(candidateId)) &&
+      (lastLogTerm > log[lastIndex].term() || (lastLogTerm == log[lastIndex].term() && lastLogIndex >= lastIndex))) {
+      votedFor = std::to_string(candidateId);
+
+      NodeInfo::Builder responseBuilder = context.getResults().getResults();
+      responseBuilder.setTerm(currentTerm);
+      responseBuilder.setVoteGranted(true);
+      fulfiller.fulfill(responseBuilder.asReader());
+      return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
+  }
+
+  NodeInfo::Builder responseBuilder = context.getResults().getResults();
+  responseBuilder.setTerm(currentTerm);
+  responseBuilder.setVoteGranted(false);
+  fulfiller.fulfill(responseBuilder.asReader());
+  return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
 }
 
 kj::Promise<NodeInfo::Reader> handleAppendEntry(HandleAppendEntryContext context){
