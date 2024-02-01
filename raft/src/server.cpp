@@ -18,7 +18,57 @@ explicit RaftServerImpl(const std::string& nodeId) : identifier(nodeId) {
 };
 
 kj::Promise<NodeInfo::Reader> appendEntry(FindSuccessorContext context){
-    return; 
+    int term = context.getParams().getTerm();
+    int leaderId = context.getParams().getLeaderId();
+    int prevLogIndex = context.getParams().getPrevLogIndex();
+    int prevLogTerm = context.getParams().getPrevLogTerm();
+    const LogEntry::Reader entries = context.getParams().getEntries();
+    int leaderCommit = context.getParams().getLeaderCommit();
+
+    kj::PromiseFulfiller<NodeInfo::Reader> fulfiller = context.getResults();
+
+    if (term < currentTerm) {
+        NodeInfo::Builder responseBuilder = context.getResults().getResults();
+        responseBuilder.setTerm(currentTerm);
+        responseBuilder.setVoteGranted(false);
+        fulfiller.fulfill(responseBuilder.asReader());
+        return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
+    }
+
+    resetElectionTimeout();
+
+    if (prevLogIndex >= log.size() || log[prevLogIndex].term() != prevLogTerm) {
+        NodeInfo::Builder responseBuilder = context.getResults().getResults();
+        responseBuilder.setTerm(currentTerm);
+        responseBuilder.setVoteGranted(false);
+        fulfiller.fulfill(responseBuilder.asReader());
+        return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
+    }
+
+    int currentIndex = prevLogIndex + 1;
+    int entriesIndex = 0;
+    while (entriesIndex < entries.size() &&
+           currentIndex < log.size() &&
+           log[currentIndex].term() == entries[entriesIndex].term()) {
+        if (log[currentIndex].term() == entries[entriesIndex].term()) {
+            log.erase(log.begin() + currentIndex, log.end());
+            break;
+        }
+        currentIndex++;
+        entriesIndex++;
+    }
+
+    while (entriesIndex < entries.size()) {
+        log.push_back(entries[entriesIndex]);
+        entriesIndex++;
+    }
+
+    commitIndex = std::min(leaderCommit, static_cast<int>(log.size()) - 1);
+
+    NodeInfo::Builder responseBuilder = context.getResults().getResults();
+    responseBuilder.setTerm(currentTerm);
+    fulfiller.fulfill(responseBuilder.asReader());
+    return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
 }
 
 kj::Promise<NodeInfo::Reader> requestVote(FindPredecessorContext context){
