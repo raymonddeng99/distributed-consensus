@@ -1,210 +1,34 @@
 #include "server.h"
-#include <capnp/ez-rpc.h>
-#include "RaftProtocol.capnp.h"
-#include <capnp/serialize.h>
-#include <iostream>
 
-explicit RaftServerImpl(const std::string& nodeId) : identifier(nodeId) {
-	currentTerm = 0;
-    votedFor = "";
-    log.clear();
-    commitIndex = 0;
-    lastIndex = 0;
-    nextIndex = 0;
-    matchIndex = 0;
+RaftServerImpl::RaftServerImpl(const NodeConfig nodeConfig, std::unordered_map<NodeConfig> clusterConfig) : NodeConfig(nodeConfig), clusterConfig(clusterConfig) {
+  currentTerm = 0;
+  votedFor = "";
+  log.clear();
+  commitIndex = 0;
+  lastIndex = 0;
+  nextIndex = 0;
+  matchIndex = 0;
 
-    currentState = ServerState::FOLLOWER;
-    resetElectionTimeout();
+  for (const auto& nodeConfig: clusterConfig){
+    if (nodeConfig == this->nodeConfig){
+      continue;
+    }
+
+    auto server = kj::heap<RaftServerImpl>(nodeConfig.ipAddress);
+    auto& serverRef = *server;
+    Raft::Client capability = kj::mv(server);
+    peers.insert({node.uuid, capability});   
+  }
+
+  currentState = ServerState::FOLLOWER;
+  setElectionTimer();
 };
 
-kj::Promise<NodeInfo::Reader> appendEntry(FindSuccessorContext context){
-    int term = context.getParams().getTerm();
-    int leaderId = context.getParams().getLeaderId();
-    int prevLogIndex = context.getParams().getPrevLogIndex();
-    int prevLogTerm = context.getParams().getPrevLogTerm();
-    const LogEntry::Reader entries = context.getParams().getEntries();
-    int leaderCommit = context.getParams().getLeaderCommit();
-
-    kj::PromiseFulfiller<NodeInfo::Reader> fulfiller = context.getResults();
-
-    if (term < currentTerm) {
-        NodeInfo::Builder responseBuilder = context.getResults().getResults();
-        responseBuilder.setTerm(currentTerm);
-        responseBuilder.setVoteGranted(false);
-        fulfiller.fulfill(responseBuilder.asReader());
-        return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-    }
-
-    resetElectionTimeout();
-
-    if (prevLogIndex >= log.size() || log[prevLogIndex].term() != prevLogTerm) {
-        NodeInfo::Builder responseBuilder = context.getResults().getResults();
-        responseBuilder.setTerm(currentTerm);
-        responseBuilder.setVoteGranted(false);
-        fulfiller.fulfill(responseBuilder.asReader());
-        return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-    }
-
-    int currentIndex = prevLogIndex + 1;
-    int entriesIndex = 0;
-    while (entriesIndex < entries.size() &&
-           currentIndex < log.size() &&
-           log[currentIndex].term() == entries[entriesIndex].term()) {
-        if (log[currentIndex].term() == entries[entriesIndex].term()) {
-            log.erase(log.begin() + currentIndex, log.end());
-            break;
-        }
-        currentIndex++;
-        entriesIndex++;
-    }
-
-    while (entriesIndex < entries.size()) {
-        log.push_back(entries[entriesIndex]);
-        entriesIndex++;
-    }
-
-    commitIndex = std::min(leaderCommit, static_cast<int>(log.size()) - 1);
-
-    NodeInfo::Builder responseBuilder = context.getResults().getResults();
-    responseBuilder.setTerm(currentTerm);
-    fulfiller.fulfill(responseBuilder.asReader());
-    return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-}
-
-kj::Promise<NodeInfo::Reader> requestVote(FindPredecessorContext context){
-  int term = context.getParams().getTerm();
-  int candidateId = context.getParams().getCandidateId();
-  int lastLogIndex = context.getParams().getLastLogIndex();
-  int lastLogTerm = context.getParams().getLastLogTerm();
-
-  kj::PromiseFulfiller<NodeInfo::Reader> fulfiller = context.getResults();
-
-  if (term < currentTerm) {
-      NodeInfo::Builder responseBuilder = context.getResults().getResults();
-      responseBuilder.setTerm(currentTerm);
-      responseBuilder.setVoteGranted(false);
-      fulfiller.fulfill(responseBuilder.asReader());
-      return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-  }
-
-  if ((votedFor.empty() || votedFor == std::to_string(candidateId)) &&
-      (lastLogTerm > log[lastIndex].term() || (lastLogTerm == log[lastIndex].term() && lastLogIndex >= lastIndex))) {
-      votedFor = std::to_string(candidateId);
-
-      NodeInfo::Builder responseBuilder = context.getResults().getResults();
-      responseBuilder.setTerm(currentTerm);
-      responseBuilder.setVoteGranted(true);
-      fulfiller.fulfill(responseBuilder.asReader());
-      return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-  }
-
-  NodeInfo::Builder responseBuilder = context.getResults().getResults();
-  responseBuilder.setTerm(currentTerm);
-  responseBuilder.setVoteGranted(false);
-  fulfiller.fulfill(responseBuilder.asReader());
-  return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-}
-
-kj::Promise<NodeInfo::Reader> handleAppendEntry(HandleAppendEntryContext context){
-	// Get the parameters from the context
-  int term = context.getParams().getTerm();
-  int prevLogIndex = context.getParams().getPrevLogIndex();
-  int prevLogTerm = context.getParams().getPrevLogTerm();
-  const LogEntry::Reader entries = context.getParams().getEntries();
-  int leaderCommit = context.getParams().getLeaderCommit();
-
-  // Create a response promise and resolver
-  kj::PromiseFulfiller<NodeInfo::Reader> fulfiller = context.getResults();
-
-  // Check if the received term is less than the current term
-  if (term < currentTerm) {
-    // Reply false if the term is less than the current term
-    fulfiller.reject(kj::Exception("Stale term"));
-    return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-  }
-
-  // Check if the log contains the entry at prevLogIndex with the matching term
-  if (prevLogIndex >= log.size() || log[prevLogIndex].term() != prevLogTerm) {
-    // Reply false if the log doesn't contain the entry at prevLogIndex with the matching term
-    fulfiller.reject(kj::Exception("Log inconsistency"));
-    return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-  }
-
-  // Process the log entries
-  int currentIndex = prevLogIndex + 1;
-  int entriesIndex = 0;
-  while (entriesIndex < entries.size() &&
-         currentIndex < log.size() &&
-         log[currentIndex].term() == entries[entriesIndex].term()) {
-    // Check if the log entry conflicts with the new one
-    if (log[currentIndex].term() == entries[entriesIndex].term()) {
-      // Delete existing entry and all that follow
-      log.erase(log.begin() + currentIndex, log.end());
-      break;
-    }
-    currentIndex++;
-    entriesIndex++;
-  }
-
-  // Append any new entries not already in the log
-  while (entriesIndex < entries.size()) {
-    log.push_back(entries[entriesIndex]);
-    entriesIndex++;
-  }
-
-  // Update the commit index
-  commitIndex = std::min(leaderCommit, static_cast<int>(log.size()) - 1);
-
-  // Respond with the current term and success
-  NodeInfo::Builder responseBuilder = context.getResults().getResults();
-  responseBuilder.setTerm(currentTerm);
-  fulfiller.fulfill(responseBuilder.asReader());
-  return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-}
-
-kj::Promise<NodeInfo::Reader> handleRequestVote(HandleRequestVoteContext context){
-	// Get the parameters from the context
-  int term = context.getParams().getTerm();
-  int candidateId = context.getParams().getCandidateId();
-  int lastLogIndex = context.getParams().getLastLogIndex();
-  int lastLogTerm = context.getParams().getLastLogTerm();
-
-  // Create a response promise and resolver
-  kj::PromiseFulfiller<NodeInfo::Reader> fulfiller = context.getResults();
-
-  // Reply false if term < currentTerm
-  if (term < currentTerm) {
-    fulfiller.reject(kj::Exception("Stale term"));
-    return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-  }
-
-  // If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
-  if ((votedFor.empty() || votedFor == std::to_string(candidateId)) &&
-      (lastLogTerm > currentTerm || (lastLogTerm == currentTerm && lastLogIndex >= lastIndex))) {
-    // Grant the vote
-    votedFor = std::to_string(candidateId);
-
-    // Respond with the current term and voteGranted true
-    NodeInfo::Builder responseBuilder = context.getResults().getResults();
-    responseBuilder.setTerm(currentTerm);
-    responseBuilder.setVoteGranted(true);
-    fulfiller.fulfill(responseBuilder.asReader());
-    return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-  }
-
-  // Reply false otherwise
-  fulfiller.reject(kj::Exception("Vote not granted"));
-  return kj::Promise<NodeInfo::Reader>(fulfiller.getPromise());
-}
-
-
-void RaftServerImpl::resetElectionTimeout() {
+void RaftServerImpl::setElectionTimer() {
     int minTimeout = 150;
     int maxTimeout = 300;
     int randomTimeout = rand() % (maxTimeout - minTimeout + 1) + minTimeout;
-
     std::chrono::milliseconds timeout(randomTimeout);
-
     kj::setTimer(timeout, [this]() {
         handleElectionTimeout();
     });
@@ -212,19 +36,184 @@ void RaftServerImpl::resetElectionTimeout() {
 
 void RaftServerImpl::handleElectionTimeout() {
   auto currentTime = std::chrono::system_clock::now();
+  bool communicationTimeout = (curentTime - lastHeartbeatTime >= electionTimeout);
+  if (communicationTimeout){
+    convertToCandidate();
+    setElectionTimer();
+  }
+};
 
-    if (currentTime - lastHeartbeatTime >= electionTimeout) {
-        convertToCandidate();
-        resetElectionTimeout();
-    }
+void RaftServerImpl::convertToCandidate() {
+    currentTerm++;
+    currentState = ServerState::CANDIDATE;
+    votedFor = identifier;
+    requestVotes();
+};
+
+void RaftServerImpl::requestVotes(){
+  int votes = 0;
+  int quorum = std::ceil(this->peers.length / 2);
+
+  for (const auto& node: this->peers){
+    auto io = kj::setupAsyncIo();
+    auto client = node->second;
+
+    auto request = client.requestVote();
+    request.setTerm(currentTerm);
+    request.setCandidateId(nodeConfig.uuid);
+    request.setLastLogIndex(lastIndex);
+    request.setLastLogTerm(log[lastIndex].term);
+
+    request.then([](kj::RequestVoteResult){
+      bool voteGranted = RequestVoteResult.getVoteGranted();
+      if (voteGranted){
+        votes += 1;
+      }
+      if (votes >= quorum){
+        convertToLeader();
+      }
+    })
+  };
 }
 
-void ChordNodeImpl::convertToCandidate() {
-    currentTerm++;
-    votedFor = std::to_string(nodeId);
+void RaftServerImpl::convertToLeader(){
+  if (this->currentState == ServerState::LEADER){
+    return;
+  }
+  currentState = ServerState::LEADER;
+  leaderHeartbeat();    // repeat during idle periods to prevent election timeouts
+}
 
-    resetElectionTimeout();
+void RaftServerImpl::leaderHeartbeat(){
+  for (const auto& node: this->peers){
+    auto io = kj::setupAsyncIo();
+    auto client = node->second;
 
-    currentState = ServerState::CANDIDATE;
-    requestVotes();
+    auto request = client.appendEntry();
+    request.setTerm(currentTerm);
+    request.setLeaderId(nodeConfig.uuid);
+    request.setPrevLogInex(lastIndex);
+    request.setLastLogTerm(log[lastIndex].term);
+    request.setEntries([]);
+    request.setLeaderCommitIndex(commitIndex);
+
+    request.then([](kj::AppendEntryResult){
+      // 
+    })
+  };
+}
+
+
+kj::Promise<void> RaftServerImpl::requestVote(RequestVoteContext context){
+  std::cout << "Received request vote...";
+  std::cout.flush();
+
+  auto io = kj::setupAsyncIo();
+
+  int term = context.getParams().getTerm();
+  if (term < currentTerm){
+    context.getResults().setTerm(currentTerm).setVoteGranted(false);
+    return kj::READY_NOW;
+  };
+
+  int candidateId = context.getParams().getCandidateId();
+  int lastLogIndex = context.getParams().getLastLogIndex();
+
+  bool canVoteForCandidate = (votedFor == "" || votedFor == candidateId);
+  bool validCandidate = (lastLogIndex >= lastIndex)
+  if (canVoteForCandidate && validCandidate){
+    context.getResults().setTerm(term).setVoteGranted(true);
+    return kj::READY_NOW;
+  }
+}
+
+kj::Promise<void> appendEntry(AppendEntryContext context){
+  std::cout << "Received append entry...";
+  std::cout.flush();
+
+  auto io = kj::setupAsyncIo();
+
+  int term = context.getParams().getTerm();
+  if (term < currentTerm){
+    context.getResults().setTerm(currentTerm).setSuccess(false);
+    return kj::READY_NOW;
+  };
+
+  int prevLogTerm = context.getParams().getPrevLogTerm();
+  int prevLogIndex = context.getParams().getPrevLogIndex();
+  if (log[prevLogIndex].term != prevLogTerm){
+    context.getResults().setTerm(currentTerm).setSuccess(false);
+    return kj::READY_NOW;
+  }
+
+  auto entries = context.getParams().getEntries();
+  for (int i = 0; i < entries.length; i++){
+    log.emplace_back(entries[i]);
+  }
+
+  int leaderCommit = context.getParams().getLeaderCommit();
+  if (leaderCommit > commitIndex){
+    int latestEntry = entries[entries[entries.length - 1]];
+    commitIndex = min(leaderCommit, latestEntry.logIndex);
+  }
+
+  context.getResults().setTerm(currentTerm).setSuccess(true);
+  return kj::READY_NOW;
+}
+
+
+kj::Promise<void> RaftServerImpl::clientRequest(ClientRequestContext context){
+  std::cout << "Servicing client request...";
+  std::cout.flush();
+
+  auto io = kj::setupAsyncIo();
+
+  int command = context.getParams().getCommand();
+  log.emplace_back(command);
+
+  for (const auto& node: this->peers){
+    auto io = kj::setupAsyncIo();
+    auto client = node->second;
+
+    auto request = client.appendEntry();
+    request.setTerm(currentTerm);
+    request.setLeaderId(nodeConfig.uuid);
+    request.setPrevLogInex(lastIndex);
+    request.setLastLogTerm(log[lastIndex].term);
+    request.setEntries([command]);
+    request.setLeaderCommitIndex(commitIndex);
+    request.then([](kj::AppendEntryResult){
+      bool success = AppendEntryResult.getSuccess();
+      if (success){
+        this->nextIndex[node.uuid] += 1;
+        this->matchIndex[node.uuid] += 1;
+      }
+      else{
+        fixLogInconsistency(node, nextIndex - 1);
+      }
+    })
+  };
+
+  context.getResults().setLeaderId(identifier).setSuccess(true);
+  return kj::READY_NOW;
+}
+
+void RaftServerImpl::fixLogInconsistency(NodeConfig inconsistentNode, int nextIndex){
+  auto io = kj::setupAsyncIo();
+
+  auto client = peers[inconsistentNode.identifier];
+
+  auto request = client.appendEntry();
+  request.setTerm(currentTerm);
+  request.setLeaderId(this->nodeConfig.uuid);
+  request.setPrevLogIndex(lastIndex);
+  request.setLastLogTerm(log[lastIndex].term);
+  request.setEntries([command]);
+  request.setLeaderCommitIndex(commitIndex);
+  request.wait(io.waitScope);
+
+  bool success = request.getSuccess();
+  if (!success){
+    fixLogInconsistency(inconsistentNode, nextIndex - 1);
+  }
 }
