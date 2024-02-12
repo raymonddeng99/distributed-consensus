@@ -38,4 +38,19 @@ Message voteMessage(MessageType type, NodeConfig node, int curView, QuorumCertif
 	return msg;
 };
 
+struct Leaf{
+	unsigned char parentHashDigest;
+	std::string command;
+
+	Leaf::Leaf(unsigned char parentHashDigest, std::string command): parentHashDigest(parentHashDigest), command(command) { };
+}
+
+bool matchingMessage(Message message, MessageType type, int viewNumber){
+	return message.type == type && message.viewNumber == viewNumber;
+}
+
+bool matchingQC(QuorumCertificate qc, MessageType type, int viewNumber){
+	return qc.type == type && qc.viewNumber == v;
+}
+
 #endif
